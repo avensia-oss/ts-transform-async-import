@@ -36,7 +36,7 @@ init();
   expectEqual(expected, compile(code));
 });
 
-test.only('single async import with alias name removes import', () => {
+test('single async import with alias name removes import', () => {
   const code = {
     'file1.ts': `
 export async function x() { 
@@ -112,6 +112,74 @@ y();
   expectEqual(expected, compile(code));
 });
 
+test('single async const function import removes import', () => {
+  const code = {
+    'file1.ts': `
+export const x = async () => {
+    return true;
+};
+  `,
+    'file2.ts': `
+import { x } from "./file1";
+  
+async function init() {
+    const y = await x();
+}
+init();
+      `,
+  };
+
+  const expected = {
+    'file1.js': `
+export const x = async () => {
+    return true;
+};
+  `,
+    'file2.js': `
+async function init() {
+    const y = await import("./file1").then(m => m.x());
+}
+init();
+  `,
+  };
+
+  expectEqual(expected, compile(code));
+});
+
+test('single async default export function removes import', () => {
+  const code = {
+    'file1.ts': `
+export default async () => {
+    return true;
+};
+  `,
+    'file2.ts': `
+import x from "./file1";
+  
+async function init() {
+    const y = await x();
+}
+init();
+      `,
+  };
+
+  const expected = {
+    'file1.js': `
+export default async () => {
+    return true;
+};
+  `,
+    'file2.js': `
+async function init() {
+    const y = await import("./file1").then(m => m.default());
+}
+init();
+  `,
+  };
+
+  expectEqual(expected, compile(code));
+});
+
 test('single async import is not removed if import is used as something other than calling', () => {
   const code = {
     'file1.ts': `
@@ -150,6 +218,46 @@ async function init() {
 init();
 q(x);
 `,
+  };
+
+  expectEqual(expected, compile(code));
+});
+
+test('exported function from other module works', () => {
+  const code = {
+    'file1.ts': `
+export default async () => {
+    return true;
+};
+    `,
+    'file2.ts': `
+export { default as x } from "./file1";
+    `,
+    'file3.ts': `
+import { x } from "./file2";
+
+async function init() {
+    const y = await x();
+}
+init();
+    `,
+  };
+
+  const expected = {
+    'file1.js': `
+export default async () => {
+    return true;
+};
+    `,
+    'file2.js': `
+export { default as x } from "./file1";
+    `,
+    'file3.js': `
+async function init() {
+    const y = await import("./file2").then(m => m.x());
+}
+init();
+    `,
   };
 
   expectEqual(expected, compile(code));

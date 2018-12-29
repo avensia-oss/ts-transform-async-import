@@ -22,18 +22,31 @@ function visitSourceFile(
     imports.map(i => {
       if (i.importClause) {
         const namedImports = i.importClause.namedBindings as ts.NamedImports;
-        if (namedImports.elements) {
-          return namedImports.elements.map(e => {
+
+        if ((namedImports && namedImports.elements) || i.importClause.name) {
+          const elements: Array<ts.ImportSpecifier | ts.Identifier> = namedImports
+            ? namedImports.elements.map(e => e)
+            : [];
+          if (i.importClause.name) {
+            elements.push(i.importClause.name);
+          }
+          return elements.map(e => {
             const type = typeChecker.getTypeAtLocation(e);
             const callSignatures = type.getCallSignatures();
             if (callSignatures.length) {
               const callSignature = callSignatures[0];
               const returnType = typeChecker.getReturnTypeOfSignature(callSignature).getSymbol();
               if (returnType && returnType.escapedName === 'Promise') {
+                const name = ts.isIdentifier(e) ? e.text : e.name.escapedText.toString();
+                const propertyName = ts.isIdentifier(e)
+                  ? 'default'
+                  : e.propertyName
+                  ? e.propertyName.escapedText.toString()
+                  : null;
                 return {
-                  propertyName: e.propertyName ? e.propertyName.escapedText.toString() : null,
-                  name: e.name.escapedText.toString(),
                   module: (i.moduleSpecifier as ts.StringLiteral).text,
+                  propertyName,
+                  name,
                 };
               }
             }
@@ -44,7 +57,7 @@ function visitSourceFile(
       return null;
     }),
   );
-  console.log(asyncImportedFunctions);
+
   if (asyncImportedFunctions.length) {
     const otherwiseUsedAsyncImportedFunctions: string[] = [];
     const transformedSourceFile = ts.visitEachChild(
@@ -66,28 +79,38 @@ function visitSourceFile(
         childNode => {
           if (childNode.kind === ts.SyntaxKind.ImportDeclaration) {
             const importDecl = childNode as ts.ImportDeclaration;
-            const importNamesToRemoveForThisImport = importsToRemove
-              .filter(i => i.module === (importDecl.moduleSpecifier as ts.StringLiteral).text)
-              .map(i => i.name);
+            const importsToRemoveForThisImport = importsToRemove.filter(
+              i => i.module === (importDecl.moduleSpecifier as ts.StringLiteral).text,
+            );
+            const importNamesToRemoveForThisImport = importsToRemoveForThisImport.map(i => i.name);
 
             if (
               importNamesToRemoveForThisImport.length &&
               importDecl.importClause &&
-              importDecl.importClause.namedBindings
+              (importDecl.importClause.namedBindings || importDecl.importClause.name)
             ) {
               const namedImports = importDecl.importClause.namedBindings as ts.NamedImports;
-              if (namedImports.elements) {
+              if ((namedImports && namedImports.elements) || importDecl.importClause.name) {
                 const shouldBeRemoved = (e: ts.ImportSpecifier) => {
                   return importNamesToRemoveForThisImport.indexOf(e.name.escapedText.toString()) !== -1;
                 };
-                if (namedImports.elements.every(shouldBeRemoved)) {
+
+                if (
+                  (!namedImports || namedImports.elements.every(shouldBeRemoved)) &&
+                  (!importDecl.importClause.name ||
+                    importsToRemoveForThisImport.some(i => i.propertyName === 'default'))
+                ) {
                   return [];
                 } else {
                   return ts.createImportDeclaration(
                     importDecl.decorators,
                     importDecl.modifiers,
                     ts.createImportClause(
-                      importDecl.importClause.name,
+                      importDecl.importClause.name
+                        ? importsToRemoveForThisImport.some(i => i.propertyName === 'default')
+                          ? undefined
+                          : importDecl.importClause.name
+                        : undefined,
                       removeImportNames(namedImports, importNamesToRemoveForThisImport),
                     ),
                     importDecl.moduleSpecifier,
@@ -197,12 +220,15 @@ function visitNode(
     if (
       identifier.parent &&
       identifier.parent.kind !== ts.SyntaxKind.ImportSpecifier &&
+      identifier.parent.kind !== ts.SyntaxKind.ImportClause &&
       identifier.parent.kind !== ts.SyntaxKind.Parameter
     ) {
-      if (asyncImportedFunctions.some(a => (a.propertyName || a.name) === identifier.text)) {
+      if (asyncImportedFunctions.some(a => a.name === identifier.text)) {
         // TODO: This is a bit naive since a child scope can create a shadow declaration of a variable
         // with the same name
-        otherwiseUsedAsyncImportedFunctions.push(identifier.text);
+        if (otherwiseUsedAsyncImportedFunctions.indexOf(identifier.text) === -1) {
+          otherwiseUsedAsyncImportedFunctions.push(identifier.text);
+        }
       }
     }
     return node;
