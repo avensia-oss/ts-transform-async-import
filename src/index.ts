@@ -166,12 +166,68 @@ function visitNodeAndChildren(
   program: ts.Program,
   context: ts.TransformationContext,
 ): ts.Node | ts.Node[] {
-  return ts.visitEachChild(
-    visitNode(node, asyncImportedFunctions, otherwiseUsedAsyncImportedFunctions, program),
+  let localOtherwiseUsedAsyncImportedFunctions = otherwiseUsedAsyncImportedFunctions;
+  const shadowedDeclarations: string[] = [];
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isBlock(node)) {
+    localOtherwiseUsedAsyncImportedFunctions = [];
+    if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) {
+      const importShadowedParams = node.parameters
+        .filter(
+          p => ts.isIdentifier(p.name) && asyncImportedFunctions.some(f => f.name === (p.name as ts.Identifier).text),
+        )
+        .map(p => (p.name as ts.Identifier).text);
+
+      shadowedDeclarations.push(...importShadowedParams);
+    }
+
+    const statements = ts.isBlock(node)
+      ? node.statements
+      : node.body
+      ? node.body.statements
+      : (([] as any) as ts.NodeArray<ts.Statement>);
+
+    const importShadowedVars = flatMap(
+      statements.map(s =>
+        ts.isVariableStatement(s)
+          ? s.declarationList.declarations.map(d =>
+              ts.isIdentifier(d.name) && asyncImportedFunctions.some(f => f.name === (d.name as ts.Identifier).text)
+                ? d.name.text
+                : null,
+            )
+          : null,
+      ),
+    );
+
+    shadowedDeclarations.push(...importShadowedVars);
+  }
+
+  const visitedNode = visitNode(node, asyncImportedFunctions, localOtherwiseUsedAsyncImportedFunctions, program);
+
+  const visitedChildNode = ts.visitEachChild(
+    visitedNode,
     childNode =>
-      visitNodeAndChildren(childNode, asyncImportedFunctions, otherwiseUsedAsyncImportedFunctions, program, context),
+      visitNodeAndChildren(
+        childNode,
+        asyncImportedFunctions,
+        localOtherwiseUsedAsyncImportedFunctions,
+        program,
+        context,
+      ),
     context,
   );
+
+  if (localOtherwiseUsedAsyncImportedFunctions !== otherwiseUsedAsyncImportedFunctions) {
+    localOtherwiseUsedAsyncImportedFunctions = localOtherwiseUsedAsyncImportedFunctions.filter(
+      l => shadowedDeclarations.indexOf(l) === -1,
+    );
+
+    localOtherwiseUsedAsyncImportedFunctions.forEach(l => {
+      if (otherwiseUsedAsyncImportedFunctions.indexOf(l) === -1) {
+        otherwiseUsedAsyncImportedFunctions.push(l);
+      }
+    });
+  }
+  return visitedChildNode;
 }
 
 function visitNode(
@@ -217,23 +273,19 @@ function visitNode(
     }
   } else if (node.kind === ts.SyntaxKind.Identifier) {
     const identifier = node as ts.Identifier;
+
     if (
       identifier.parent &&
       identifier.parent.kind !== ts.SyntaxKind.ImportSpecifier &&
-      identifier.parent.kind !== ts.SyntaxKind.ImportClause &&
-      identifier.parent.kind !== ts.SyntaxKind.Parameter
+      identifier.parent.kind !== ts.SyntaxKind.ImportClause
     ) {
       if (asyncImportedFunctions.some(a => a.name === identifier.text)) {
-        // TODO: This is a bit naive since a child scope can create a shadow declaration of a variable
-        // with the same name
         if (otherwiseUsedAsyncImportedFunctions.indexOf(identifier.text) === -1) {
           otherwiseUsedAsyncImportedFunctions.push(identifier.text);
         }
       }
     }
     return node;
-  } else if (node.kind === ts.SyntaxKind.ImportDeclaration) {
-    const importDecl = node as ts.ImportDeclaration;
   }
   return node;
 }
